@@ -229,6 +229,92 @@ def generate(model, prompt, attention_mask=None, steps=128, gen_length=128, bloc
                 newly_unmasked = transfer_index  # from mask -> token this step
                 H_cache[newly_unmasked] = H_cur[newly_unmasked]
 
+            elif remasking == 'low_confidence_all':
+                B, Ltot = x.shape
+
+                # 후보 영역: 프롬프트 제외 + 현재 블록 끝까지(= 지금까지 생성한 모든 토큰)
+                block_start = prompt.shape[1] + num_block * block_length
+                block_end   = prompt.shape[1] + (num_block + 1) * block_length
+
+                upto_current = torch.zeros_like(mask_index)
+                upto_current[:, :block_end] = True
+                non_prompt = ~prompt_index
+                cand_mask = upto_current & non_prompt  # 우리가 재조정(keep/remask)할 수 있는 모든 위치
+
+                # 현재 step 분포 (이미 계산되어 있음): p_cur = softmax(logits)
+                # confidence for "masked→token" 후보는 x0의 확률로, 
+                # "이미 언마스크된" 후보는 현재 토큰 x의 확률로 점수화한다.
+                #   S_masked = p_cur[b,l, x0[b,l]]
+                #   S_prev   = p_cur[b,l, x[b,l]]
+                S_conf = torch.full((B, Ltot), -float("inf"), device=x.device, dtype=torch.float32)
+
+                # (1) masked 후보 점수
+                masked_cands = (mask_index & cand_mask)
+                if masked_cands.any():
+                    S_conf[masked_cands] = torch.gather(
+                        p_cur[masked_cands.unsqueeze(-1).expand(-1,-1,p_cur.shape[-1])],
+                        dim=-1,
+                        index=x0[masked_cands].unsqueeze(-1)
+                    ).squeeze(-1)
+
+                # (2) 이미 언마스크된 후보 점수
+                prev_cands = ((~mask_index) & cand_mask)
+                if prev_cands.any():
+                    S_conf[prev_cands] = torch.gather(
+                        p_cur[prev_cands.unsqueeze(-1).expand(-1,-1,p_cur.shape[-1])],
+                        dim=-1,
+                        index=x[prev_cands].unsqueeze(-1)
+                    ).squeeze(-1)
+
+                # 스케줄 보존: 이번 step의 최종 언마스크 수 = (이전 언마스크 수) + num_transfer_tokens
+                keep_index = torch.zeros_like(mask_index)
+
+                # 이전 mask 상태를 저장(이 step에서 새로 unmask 된 위치를 알아내기 위함)
+                was_mask = mask_index.clone()
+
+                for j in range(B):
+                    # 현재 후보 영역에서 이전 언마스크 위치들
+                    prev_unmasked_idx = ((~mask_index[j]) & cand_mask[j]).nonzero(as_tuple=False).squeeze(-1)
+                    prev_unmasked_cnt = int(prev_unmasked_idx.numel())
+
+                    k_unmask = int(num_transfer_tokens[j, i].item())  # 이번 step에 mask→token으로 전이해야 할 개수(스케줄)
+
+                    # (A) masked 중에서 "확신 높은(top confidence)" k_unmask개를 먼저 선택해 이번 step에 언마스크로 전환
+                    masked_idx = (mask_index[j] & cand_mask[j]).nonzero(as_tuple=False).squeeze(-1)
+                    chosen_masked = masked_idx.new_empty((0,), dtype=torch.long)
+                    if masked_idx.numel() > 0 and k_unmask > 0:
+                        conf_masked = S_conf[j, masked_idx]
+                        k_sel = min(k_unmask, masked_idx.numel())
+                        _, ord_masked = torch.topk(conf_masked, k=k_sel)  # 높은 확률 우선
+                        chosen_masked = masked_idx[ord_masked]
+
+                    keep_set = set(chosen_masked.tolist())
+
+                    # (B) 나머지는 이전 언마스크들 중에서 선택해 "총 keep 수 = prev_unmasked_cnt + k_unmask"가 되도록
+                    target_keep = prev_unmasked_cnt + k_unmask
+                    need_prev_keep = target_keep - len(keep_set)
+
+                    if need_prev_keep > 0 and prev_unmasked_idx.numel() > 0:
+                        conf_prev = S_conf[j, prev_unmasked_idx]
+                        k_prev = min(need_prev_keep, prev_unmasked_idx.numel())
+                        _, ord_prev = torch.topk(conf_prev, k=k_prev)  # 높은 확률 우선 keep
+                        chosen_prev = prev_unmasked_idx[ord_prev]
+                        keep_set.update(chosen_prev.tolist())
+
+                    # 프롬프트는 항상 keep
+                    keep_index[j, :prompt.shape[1]] = prompt_index[j, :prompt.shape[1]]
+                    if len(keep_set) > 0:
+                        keep_index[j, list(keep_set)] = True
+
+                # 최종 적용:
+                #  - (mask였고 keep으로 뽑힌) 위치는 이번 step 예측 x0로 채움
+                newly_kept_from_mask = keep_index & was_mask
+                x[newly_kept_from_mask] = x0[newly_kept_from_mask]
+
+                #  - keep 아닌 (프롬프트 제외) 위치는 [MASK]로 되돌림 → 이전 언마스크들도 low-confidence면 remask됨
+                drop_index = (~keep_index) & (~prompt_index)
+                x[drop_index] = mask_id
+
             # MIRAGE BRANCHES
             elif remasking in ('mirage-1', 'mirage-2'):
                 B, Ltot = x.shape
