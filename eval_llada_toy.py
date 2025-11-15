@@ -12,7 +12,7 @@ from generate import generate  # 네가 MIRAGE 구현해 둔 generate.py
 from eval.gsm8k import GSM8KDataset
 from eval.countdown import CTDDataset
 from eval.sudoku import SudokuDataset
-from parsers import Parser, is_equiv
+from eval.parsers import Parser, is_equiv
 
 
 DATASET_MAP = {
