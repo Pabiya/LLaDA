@@ -40,14 +40,12 @@ def build_model_and_tokenizer(model_path: str, device: torch.device):
 def parse_solution(solution: str):
     gold_parsed = parse(
         solution,
-        extraction_mode="first_match",
-        extraction_config=[LatexExtractionConfig()],
+        extraction_config=extract_config,
     )
     if len(gold_parsed) == 0:
         gold_parsed = parse(
             "$" + solution + "$",
-            extraction_mode="first_match",
-            extraction_config=[LatexExtractionConfig()],
+            extraction_config=extract_config,
         )
     return gold_parsed
 
@@ -170,11 +168,20 @@ def main():
         ),
     )
 
-    norm_config = NormalizationConfig(
-        implicit_plus=True,
-        implicit_times=True,
-        implicit_function_multiplication=True,
-    )
+    extract_config = [
+        LatexExtractionConfig(
+            normalization_config=NormalizationConfig(
+                nits=False,
+                malformed_operators=False,
+                basic_latex=True,
+                equations=True,
+                boxed="all",
+                units=True,
+            ),
+            boxed_match_priority=0,
+            try_extract_without_anchor=False,
+        )
+    ]
 
     total = 0
     num_correct = 0
@@ -206,13 +213,11 @@ def main():
             total += 1
 
             # 정답 파싱
-            gold_parsed = parse_solution(sol)
+            gold_parsed = parse_solution(sol, extract_config)
             # 모델 답 파싱
             answer_parsed = parse(
                 ans,
-                extraction_mode="first_match",
-                extraction_config=[LatexExtractionConfig()],
-                normalization_config=norm_config,
+                extraction_config=extract_config,
             )
 
             is_correct = False
