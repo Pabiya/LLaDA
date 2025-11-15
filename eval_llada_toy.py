@@ -125,7 +125,7 @@ def main():
 
     for batch in tqdm(dataloader, desc="Evaluating"):
         input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
+        attention_mask = None
         questions = batch["questions"]
         answers = batch["answers"]
 
