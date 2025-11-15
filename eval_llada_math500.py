@@ -13,6 +13,20 @@ from generate import generate  # MIRAGE가 들어있는 LLaDA generate
 from math_verify import LatexExtractionConfig, parse, verify
 from latex2sympy2_extended import NormalizationConfig
 
+extract_config = [
+    LatexExtractionConfig(
+        normalization_config=NormalizationConfig(
+            nits=False,
+            malformed_operators=False,
+            basic_latex=True,
+            equations=True,
+            boxed="all",
+            units=True,
+        ),
+        boxed_match_priority=0,
+        try_extract_without_anchor=False,
+    )
+]
 
 def build_model_and_tokenizer(model_path: str, device: torch.device):
     try:
@@ -168,21 +182,6 @@ def main():
         ),
     )
 
-    extract_config = [
-        LatexExtractionConfig(
-            normalization_config=NormalizationConfig(
-                nits=False,
-                malformed_operators=False,
-                basic_latex=True,
-                equations=True,
-                boxed="all",
-                units=True,
-            ),
-            boxed_match_priority=0,
-            try_extract_without_anchor=False,
-        )
-    ]
-
     total = 0
     num_correct = 0
 
@@ -213,7 +212,7 @@ def main():
             total += 1
 
             # 정답 파싱
-            gold_parsed = parse_solution(sol, extract_config)
+            gold_parsed = parse_solution(sol)
             # 모델 답 파싱
             answer_parsed = parse(
                 ans,
